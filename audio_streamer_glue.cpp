@@ -120,6 +120,11 @@ public:
 
         client.setCloseCallback([this](int code, const std::string &reason)
                                 {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "=== WEBSOCKET setCloseCallback TRIGGERED ===\n");
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "Close code: %d, reason: %s\n", code, reason.c_str());
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "Session ID: %s\n", m_sessionId.c_str());
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "isCleanedUp: %s\n", this->isCleanedUp() ? "YES" : "NO");
+            
             cJSON *root, *message;
             root = cJSON_CreateObject();
             cJSON_AddStringToObject(root, "status", "disconnected");
@@ -129,7 +134,9 @@ public:
             cJSON_AddItemToObject(root, "message", message);
             char *json_str = cJSON_PrintUnformatted(root);
 
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "Calling eventCallback with CONNECTION_DROPPED\n");
             eventCallback(CONNECTION_DROPPED, json_str);
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "eventCallback returned\n");
 
             cJSON_Delete(root);
             switch_safe_free(json_str); });
@@ -188,27 +195,50 @@ public:
                 break;
             case CONNECTION_DROPPED:
             {
-                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_INFO, "connection closed\n");
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "=== WEBSOCKET CONNECTION_DROPPED EVENT ===\n");
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "Session ID: %s\n", m_sessionId.c_str());
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "Message: %s\n", message ? message : "NULL");
+                
                 m_notify(psession, EVENT_DISCONNECT, message);
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "EVENT_DISCONNECT notification sent\n");
+                
                 // When WebSocket disconnects, close the media bug to trigger cleanup
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "Calling media_bug_close...\n");
                 media_bug_close(psession);
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "media_bug_close completed\n");
+                
                 // Hangup the channel since the WebSocket connection is gone
                 switch_channel_t *channel = switch_core_session_get_channel(psession);
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "Got channel pointer: %p\n", (void*)channel);
                 if (channel) {
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_INFO, "Hanging up channel due to WebSocket disconnect\n");
-                    switch_channel_hangup(channel, SWITCH_CAUSE_NORMAL_CLEARING);
+                    switch_channel_state_t state = switch_channel_get_state(channel);
+                    const char *state_name = switch_channel_state_name(state);
+                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "Channel state before hangup: %s\n", state_name);
+                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "=== CALLING switch_channel_hangup NOW ===\n");
+                    switch_status_t hangup_result = switch_channel_hangup(channel, SWITCH_CAUSE_NORMAL_CLEARING);
+                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "switch_channel_hangup returned: %d\n", hangup_result);
+                    state = switch_channel_get_state(channel);
+                    state_name = switch_channel_state_name(state);
+                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "Channel state after hangup: %s\n", state_name);
+                } else {
+                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_ERROR, "CHANNEL IS NULL - cannot hangup!\n");
                 }
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "=== CONNECTION_DROPPED HANDLER COMPLETE ===\n");
             }
             break;
             case CONNECT_ERROR:
             {
-                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_INFO, "connection error\n");
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "=== WEBSOCKET CONNECT_ERROR EVENT ===\n");
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "Session ID: %s\n", m_sessionId.c_str());
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "Error message: %s\n", message ? message : "NULL");
+                
                 m_notify(psession, EVENT_ERROR, message);
                 media_bug_close(psession);
+                
                 // Hangup the channel since WebSocket connection failed
                 switch_channel_t *channel = switch_core_session_get_channel(psession);
                 if (channel) {
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_INFO, "Hanging up channel due to WebSocket error\n");
+                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "Hanging up channel due to WebSocket error\n");
                     switch_channel_hangup(channel, SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER);
                 }
             }

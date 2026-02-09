@@ -215,8 +215,8 @@ public:
                     const char *state_name = switch_channel_state_name(state);
                     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "Channel state before hangup: %s\n", state_name);
                     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "=== CALLING switch_channel_hangup NOW ===\n");
-                    switch_status_t hangup_result = switch_channel_hangup(channel, SWITCH_CAUSE_NORMAL_CLEARING);
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "switch_channel_hangup returned: %d\n", hangup_result);
+                    switch_channel_state_t hangup_result = switch_channel_hangup(channel, SWITCH_CAUSE_NORMAL_CLEARING);
+                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "switch_channel_hangup returned state: %s\n", switch_channel_state_name(hangup_result));
                     state = switch_channel_get_state(channel);
                     state_name = switch_channel_state_name(state);
                     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_NOTICE, "Channel state after hangup: %s\n", state_name);

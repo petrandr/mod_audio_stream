@@ -451,7 +451,7 @@ public:
 
     void disconnect()
     {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "disconnecting...\n");
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "disconnecting...............\n");
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "=== WebSocketClient disconnect() starting ===\n");
         client.disconnect();
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "=== WebSocketClient disconnect() completed ===\n");

@@ -452,7 +452,9 @@ public:
     void disconnect()
     {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "disconnecting...\n");
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "=== WebSocketClient disconnect() starting ===\n");
         client.disconnect();
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "=== WebSocketClient disconnect() completed ===\n");
     }
 
     bool isConnected()
@@ -676,47 +678,58 @@ namespace
 
     void destroy_tech_pvt(private_t *tech_pvt)
     {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s === destroy_tech_pvt CALLED ===\n", tech_pvt->sessionId);
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "%s destroy_tech_pvt\n", tech_pvt->sessionId);
         if (tech_pvt->read_resampler)
         {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s destroying read_resampler\n", tech_pvt->sessionId);
             speex_resampler_destroy(tech_pvt->read_resampler);
             tech_pvt->read_resampler = nullptr;
         }
         if (tech_pvt->mutex)
         {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s destroying mutex\n", tech_pvt->sessionId);
             switch_mutex_destroy(tech_pvt->mutex);
             tech_pvt->mutex = nullptr;
         }
         if (tech_pvt->write_mutex)
         {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s destroying write_mutex\n", tech_pvt->sessionId);
             switch_mutex_destroy(tech_pvt->write_mutex);
             tech_pvt->write_mutex = nullptr;
         }
         if (tech_pvt->read_sbuffer)
         {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s destroying read_sbuffer\n", tech_pvt->sessionId);
             switch_buffer_destroy(&tech_pvt->read_sbuffer);
             tech_pvt->read_sbuffer = nullptr;
         }
         if (tech_pvt->write_sbuffer)
         {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s destroying write_sbuffer\n", tech_pvt->sessionId);
             switch_buffer_destroy(&tech_pvt->write_sbuffer);
             tech_pvt->write_sbuffer = nullptr;
         }
         if (tech_pvt->pAudioStreamer)
         {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s deleting AudioStreamer\n", tech_pvt->sessionId);
             auto *as = (AudioStreamer *)tech_pvt->pAudioStreamer;
             delete as;
             tech_pvt->pAudioStreamer = nullptr;
         }
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s === destroy_tech_pvt COMPLETE ===\n", tech_pvt->sessionId);
     }
 
     void finish(private_t *tech_pvt)
     {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s === finish() CALLED ===\n", tech_pvt->sessionId);
         auto *audioStreamer = (AudioStreamer *)tech_pvt->pAudioStreamer;
         if (audioStreamer)
         {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s Calling markCleanedUp...\n", tech_pvt->sessionId);
             // Mark as cleaned up and clear callbacks FIRST to prevent race conditions
             audioStreamer->markCleanedUp();
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s Calling disconnect...\n", tech_pvt->sessionId);
             // Disconnect synchronously to ensure no callbacks fire during cleanup
             audioStreamer->disconnect();
             tech_pvt->pAudioStreamer = nullptr;
@@ -1119,6 +1132,7 @@ extern "C"
 
     switch_status_t stream_session_cleanup(switch_core_session_t *session, char *text, int channelIsClosing)
     {
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "=== stream_session_cleanup CALLED === channelIsClosing=%d\n", channelIsClosing);
         switch_channel_t *channel = switch_core_session_get_channel(session);
         auto *bug = (switch_media_bug_t *)switch_channel_get_private(channel, MY_BUG_NAME);
         if (bug)
@@ -1127,7 +1141,9 @@ extern "C"
             char sessionId[MAX_SESSION_ID];
             strcpy(sessionId, tech_pvt->sessionId);
 
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "(%s) Acquiring mutex...\n", sessionId);
             switch_mutex_lock(tech_pvt->mutex);
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "(%s) Mutex acquired\n", sessionId);
             switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%s) stream_session_cleanup\n", sessionId);
 
             tech_pvt->close_requested = 1;
@@ -1135,35 +1151,45 @@ extern "C"
             switch_thread_t *write_thread = tech_pvt->write_thread;
             tech_pvt->write_thread = nullptr;
 
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "(%s) Setting channel private to null\n", sessionId);
             switch_channel_set_private(channel, MY_BUG_NAME, nullptr);
             if (!channelIsClosing)
             {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "(%s) Removing media bug\n", sessionId);
                 switch_core_media_bug_remove(session, &bug);
             }
 
             auto *audioStreamer = (AudioStreamer *)tech_pvt->pAudioStreamer;
             if (audioStreamer)
             {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "(%s) Deleting files\n", sessionId);
                 audioStreamer->deleteFiles();
                 if (text)
                     audioStreamer->writeText(text);
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "(%s) Calling finish()\n", sessionId);
                 finish(tech_pvt);
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "(%s) finish() returned\n", sessionId);
             }
 
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "(%s) Releasing mutex\n", sessionId);
             switch_mutex_unlock(tech_pvt->mutex);
 
             if (write_thread)
             {
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "(%s) Joining write thread...\n", sessionId);
                 switch_status_t thread_status = SWITCH_STATUS_SUCCESS;
                 switch_status_t join_result = switch_thread_join(&thread_status, write_thread);
+                switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "(%s) Write thread joined, result=%d\n", sessionId, join_result);
                 if (join_result != SWITCH_STATUS_SUCCESS)
                 {
                     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING, "(%s) stream_session_cleanup: failed to join write thread (%d)\n", sessionId, join_result);
                 }
             }
 
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "(%s) Calling destroy_tech_pvt\n", sessionId);
             destroy_tech_pvt(tech_pvt);
 
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "(%s) === stream_session_cleanup COMPLETE ===\n", sessionId);
             switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "(%s) stream_session_cleanup: connection closed\n", sessionId);
             return SWITCH_STATUS_SUCCESS;
         }

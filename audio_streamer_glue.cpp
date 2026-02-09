@@ -187,16 +187,32 @@ public:
                 m_notify(psession, EVENT_CONNECT, message);
                 break;
             case CONNECTION_DROPPED:
+            {
                 switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_INFO, "connection closed\n");
                 m_notify(psession, EVENT_DISCONNECT, message);
-                break;
+                // When WebSocket disconnects, close the media bug to trigger cleanup
+                media_bug_close(psession);
+                // Hangup the channel since the WebSocket connection is gone
+                switch_channel_t *channel = switch_core_session_get_channel(psession);
+                if (channel) {
+                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_INFO, "Hanging up channel due to WebSocket disconnect\n");
+                    switch_channel_hangup(channel, SWITCH_CAUSE_NORMAL_CLEARING);
+                }
+            }
+            break;
             case CONNECT_ERROR:
+            {
                 switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_INFO, "connection error\n");
                 m_notify(psession, EVENT_ERROR, message);
-
                 media_bug_close(psession);
-
-                break;
+                // Hangup the channel since WebSocket connection failed
+                switch_channel_t *channel = switch_core_session_get_channel(psession);
+                if (channel) {
+                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_INFO, "Hanging up channel due to WebSocket error\n");
+                    switch_channel_hangup(channel, SWITCH_CAUSE_DESTINATION_OUT_OF_ORDER);
+                }
+            }
+            break;
             case MESSAGE:
                 std::string msg(message);
                 if (processMessage(psession, msg) != SWITCH_TRUE)

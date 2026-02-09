@@ -452,9 +452,17 @@ public:
     void disconnect()
     {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "disconnecting...............\n");
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "=== WebSocketClient disconnect() starting ===\n");
-        client.disconnect();
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "=== WebSocketClient disconnect() completed ===\n");
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "=== WebSocketClient disconnect() starting (non-blocking) ===\n");
+        // Don't block - just initiate disconnect and return
+        // The WebSocket library may block indefinitely waiting for server response
+        std::thread([this]() {
+            try {
+                client.disconnect();
+            } catch (...) {
+                // Ignore errors during async disconnect
+            }
+        }).detach();
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "=== WebSocketClient disconnect() initiated ===\n");
     }
 
     bool isConnected()

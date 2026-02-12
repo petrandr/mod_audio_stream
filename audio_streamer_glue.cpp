@@ -292,7 +292,7 @@ public:
                     try
                     {
                         rawAudio = base64_decode(jsonAudio->valuestring);
-                        
+
                         // Re-check cleanup state after potentially slow base64 decode
                         if (isCleanedUp())
                         {
@@ -300,17 +300,12 @@ public:
                             cJSON_Delete(json);
                             return SWITCH_FALSE;
                         }
-                        
+
                         auto *bug = get_media_bug(session);
-                        if (!bug)
+                        if (bug)
                         {
-                            cJSON_Delete(jsonAudio);
-                            cJSON_Delete(json);
-                            return SWITCH_FALSE;
-                        }
-                        
-                        auto *tech_pvt = (private_t *)switch_core_media_bug_get_user_data(bug);
-                        if (!tech_pvt || tech_pvt->close_requested || !tech_pvt->write_mutex || !tech_pvt->write_sbuffer)
+                            auto *tech_pvt = (private_t *)switch_core_media_bug_get_user_data(bug);
+                            if (!tech_pvt || tech_pvt->close_requested || !tech_pvt->write_mutex || !tech_pvt->write_sbuffer)
                             {
                                 cJSON_Delete(jsonAudio);
                                 cJSON_Delete(json);

@@ -9,7 +9,10 @@
 #include <unordered_set>
 #include <atomic>
 #include <memory>
+#include <mutex>
+#include <condition_variable>
 #include <thread>
+#include <chrono>
 #include <vector>
 #include "base64.h"
 
@@ -348,33 +351,44 @@ public:
                             }
 
                             const size_t bytes_out = out_len * channels * sizeof(spx_int16_t);
-                            // Check again before locking to prevent race condition during cleanup
-                            if (tech_pvt->close_requested || isCleanedUp() || !tech_pvt->write_mutex || !tech_pvt->write_sbuffer)
+                            // Re-check cleanup state right before locking to prevent race
+                            // condition where destroy_tech_pvt nullifies write_mutex
+                            if (tech_pvt->close_requested || isCleanedUp())
                             {
                                 cJSON_Delete(jsonAudio);
                                 cJSON_Delete(json);
                                 return SWITCH_FALSE;
                             }
-                            if (switch_mutex_lock(tech_pvt->write_mutex) == SWITCH_STATUS_SUCCESS)
+                            switch_mutex_t *wmutex = tech_pvt->write_mutex;
+                            switch_buffer_t *wbuffer = tech_pvt->write_sbuffer;
+                            if (!wmutex || !wbuffer)
+                            {
+                                cJSON_Delete(jsonAudio);
+                                cJSON_Delete(json);
+                                return SWITCH_FALSE;
+                            }
+                            if (switch_mutex_lock(wmutex) == SWITCH_STATUS_SUCCESS)
                             {
                                 size_t remaining = bytes_out;
                                 const uint8_t *ptr = reinterpret_cast<const uint8_t *>(out_buf.data());
                                 while (remaining > 0)
                                 {
-                                    switch_size_t free_space = switch_buffer_freespace(tech_pvt->write_sbuffer);
+                                    switch_size_t free_space = switch_buffer_freespace(wbuffer);
                                     if (free_space == 0)
                                     {
-                                        switch_mutex_unlock(tech_pvt->write_mutex);
+                                        switch_mutex_unlock(wmutex);
                                         switch_yield(10000);
-                                        switch_mutex_lock(tech_pvt->write_mutex);
+                                        if (isCleanedUp() || tech_pvt->close_requested)
+                                            break;
+                                        switch_mutex_lock(wmutex);
                                         continue;
                                     }
                                     size_t chunk = std::min<size_t>(remaining, free_space);
-                                    switch_buffer_write(tech_pvt->write_sbuffer, ptr, chunk);
+                                    switch_buffer_write(wbuffer, ptr, chunk);
                                     ptr += chunk;
                                     remaining -= chunk;
                                 }
-                                switch_mutex_unlock(tech_pvt->write_mutex);
+                                switch_mutex_unlock(wmutex);
                             }
                             else
                             {
@@ -460,21 +474,59 @@ public:
 
     ~AudioStreamer() = default;
 
-    void disconnect()
+    // Returns true if disconnect completed cleanly, false if it timed out
+    // (in which case a detached thread may still reference this object)
+    bool disconnect()
     {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "disconnecting...............\n");
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "=== WebSocketClient disconnect() starting (non-blocking) ===\n");
-        // Don't block - just initiate disconnect and return
-        // The WebSocket library may block indefinitely waiting for server response
-        std::thread([this]() {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "=== WebSocketClient disconnect() starting ===\n");
+
+        // Shared state on the heap so it survives if we detach the thread.
+        // Both the disconnect thread and this function hold a shared_ptr,
+        // so the memory is freed when the last one finishes.
+        struct DisconnectState {
+            std::mutex mtx;
+            std::condition_variable cv;
+            bool done = false;
+        };
+        auto state = std::make_shared<DisconnectState>();
+
+        std::thread disconnectThread([this, state]() {
             try {
                 client.disconnect();
             } catch (...) {
-                // Ignore errors during async disconnect
+                // Ignore errors during disconnect
             }
-        }).detach();
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "=== WebSocketClient disconnect() initiated ===\n");
+            {
+                std::lock_guard<std::mutex> lk(state->mtx);
+                state->done = true;
+            }
+            state->cv.notify_one();
+        });
+
+        bool joined = false;
+        {
+            std::unique_lock<std::mutex> lk(state->mtx);
+            if (state->cv.wait_for(lk, std::chrono::seconds(5), [&state]{ return state->done; })) {
+                joined = true;
+            }
+        }
+
+        if (joined) {
+            disconnectThread.join();
+        } else {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+                "=== WebSocketClient disconnect() timed out after 5s, detaching ===\n");
+            disconnectThread.detach();
+        }
+
+        m_disconnectClean = joined;
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE,
+            "=== WebSocketClient disconnect() complete (joined=%s) ===\n", joined ? "yes" : "no");
+        return joined;
     }
+
+    bool disconnectedCleanly() const { return m_disconnectClean; }
 
     bool isConnected()
     {
@@ -530,6 +582,7 @@ private:
     int m_playFile;
     std::unordered_set<std::string> m_Files;
     std::atomic<bool> m_cleanedUp{false};
+    bool m_disconnectClean{false};
 };
 
 namespace
@@ -699,6 +752,28 @@ namespace
     {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s === destroy_tech_pvt CALLED ===\n", tech_pvt->sessionId);
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "%s destroy_tech_pvt\n", tech_pvt->sessionId);
+
+        // Delete AudioStreamer FIRST — this ensures the WebSocket thread is fully
+        // stopped before we destroy any mutexes or buffers it might reference.
+        if (tech_pvt->pAudioStreamer)
+        {
+            auto *as = (AudioStreamer *)tech_pvt->pAudioStreamer;
+            if (as->disconnectedCleanly())
+            {
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s deleting AudioStreamer\n", tech_pvt->sessionId);
+                delete as;
+            }
+            else
+            {
+                // Disconnect timed out — a detached thread still references this object.
+                // Intentionally leak it to avoid use-after-free. This is a rare edge case
+                // that only happens when the WebSocket server doesn't respond to close.
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+                    "%s leaking AudioStreamer — disconnect did not complete cleanly\n", tech_pvt->sessionId);
+            }
+            tech_pvt->pAudioStreamer = nullptr;
+        }
+
         if (tech_pvt->read_resampler)
         {
             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s destroying read_resampler\n", tech_pvt->sessionId);
@@ -729,13 +804,6 @@ namespace
             switch_buffer_destroy(&tech_pvt->write_sbuffer);
             tech_pvt->write_sbuffer = nullptr;
         }
-        if (tech_pvt->pAudioStreamer)
-        {
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s deleting AudioStreamer\n", tech_pvt->sessionId);
-            auto *as = (AudioStreamer *)tech_pvt->pAudioStreamer;
-            delete as;
-            tech_pvt->pAudioStreamer = nullptr;
-        }
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s === destroy_tech_pvt COMPLETE ===\n", tech_pvt->sessionId);
     }
 
@@ -746,10 +814,16 @@ namespace
         if (audioStreamer)
         {
             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s Calling markCleanedUp...\n", tech_pvt->sessionId);
-            // Mark as cleaned up and clear callbacks FIRST to prevent race conditions
+            // Mark as cleaned up and clear callbacks FIRST to prevent new callbacks
             audioStreamer->markCleanedUp();
+
+            // Give any in-flight processMessage calls time to see the flag and bail out.
+            // This is necessary because processMessage may have already passed the
+            // isCleanedUp() check and be about to access write_mutex/write_sbuffer.
+            switch_sleep(100000); // 100ms
+
             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s Calling disconnect...\n", tech_pvt->sessionId);
-            // Disconnect synchronously to ensure no callbacks fire during cleanup
+            // Disconnect with timeout to ensure WebSocket event loop stops
             audioStreamer->disconnect();
             tech_pvt->pAudioStreamer = nullptr;
         }

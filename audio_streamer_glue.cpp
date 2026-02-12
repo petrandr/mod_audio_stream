@@ -244,13 +244,15 @@ public:
             }
             break;
             case MESSAGE:
-                std::string msg(message);
-                if (processMessage(psession, msg) != SWITCH_TRUE)
-                {
-                    m_notify(psession, EVENT_JSON, msg.c_str());
+                if (!isCleanedUp()) {
+                    std::string msg(message);
+                    if (processMessage(psession, msg) != SWITCH_TRUE)
+                    {
+                        m_notify(psession, EVENT_JSON, msg.c_str());
+                    }
+                    if (!m_suppress_log)
+                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_DEBUG, "response: %s\n", msg.c_str());
                 }
-                if (!m_suppress_log)
-                    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_DEBUG, "response: %s\n", msg.c_str());
                 break;
             }
             switch_core_session_rwunlock(psession);
@@ -290,11 +292,25 @@ public:
                     try
                     {
                         rawAudio = base64_decode(jsonAudio->valuestring);
-                        auto *bug = get_media_bug(session);
-                        if (bug)
+                        
+                        // Re-check cleanup state after potentially slow base64 decode
+                        if (isCleanedUp())
                         {
-                            auto *tech_pvt = (private_t *)switch_core_media_bug_get_user_data(bug);
-                            if (!tech_pvt || tech_pvt->close_requested)
+                            cJSON_Delete(jsonAudio);
+                            cJSON_Delete(json);
+                            return SWITCH_FALSE;
+                        }
+                        
+                        auto *bug = get_media_bug(session);
+                        if (!bug)
+                        {
+                            cJSON_Delete(jsonAudio);
+                            cJSON_Delete(json);
+                            return SWITCH_FALSE;
+                        }
+                        
+                        auto *tech_pvt = (private_t *)switch_core_media_bug_get_user_data(bug);
+                        if (!tech_pvt || tech_pvt->close_requested || !tech_pvt->write_mutex || !tech_pvt->write_sbuffer)
                             {
                                 cJSON_Delete(jsonAudio);
                                 cJSON_Delete(json);
@@ -338,7 +354,7 @@ public:
 
                             const size_t bytes_out = out_len * channels * sizeof(spx_int16_t);
                             // Check again before locking to prevent race condition during cleanup
-                            if (tech_pvt->close_requested)
+                            if (tech_pvt->close_requested || isCleanedUp() || !tech_pvt->write_mutex || !tech_pvt->write_sbuffer)
                             {
                                 cJSON_Delete(jsonAudio);
                                 cJSON_Delete(json);

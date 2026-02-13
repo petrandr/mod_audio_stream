@@ -468,6 +468,27 @@ public:
                 switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "(%s) processMessage - no data in streamAudio\n", m_sessionId.c_str());
             }
         }
+        else if (jsType && strcmp(jsType, "clearAudio") == 0)
+        {
+            auto *bug = get_media_bug(session);
+            if (bug)
+            {
+                auto *tech_pvt = (private_t *)switch_core_media_bug_get_user_data(bug);
+                if (tech_pvt && tech_pvt->write_mutex && tech_pvt->write_sbuffer && !tech_pvt->close_requested)
+                {
+                    if (switch_mutex_lock(tech_pvt->write_mutex) == SWITCH_STATUS_SUCCESS)
+                    {
+                        switch_size_t flushed = switch_buffer_inuse(tech_pvt->write_sbuffer);
+                        switch_buffer_zero(tech_pvt->write_sbuffer);
+                        switch_mutex_unlock(tech_pvt->write_mutex);
+                        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE,
+                                          "(%s) clearAudio — flushed %zu bytes from write buffer\n",
+                                          m_sessionId.c_str(), (size_t)flushed);
+                        status = SWITCH_TRUE;
+                    }
+                }
+            }
+        }
         cJSON_Delete(json);
         return status;
     }
